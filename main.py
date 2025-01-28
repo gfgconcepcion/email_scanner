@@ -1,6 +1,8 @@
 import os
 import pickle
 import base64
+import csv
+import re
 from typing import List, Dict
 from datetime import datetime
 from pathlib import Path
@@ -126,8 +128,51 @@ def get_email_content(email: Dict) -> str:
 
     return '\n'.join(content) if content else 'No readable content available'
 
+def create_word_frequency_table(content: str) -> Dict[str, int]:
+    """Creates a frequency table of unique words in the content."""
+    # Remove HTML tags if any exist
+    content = re.sub(r'<[^>]+>', '', content)
+    
+    # Remove URLs
+    content = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', content)
+    
+    # Split content into lines and keep only content before "Subscription Information"
+    lines = content.split('\n')
+    content_lines = []
+    for line in lines:
+        if line.strip() == "Subscription Information":
+            break
+        content_lines.append(line)
+    
+    # Rejoin the filtered content
+    filtered_content = '\n'.join(content_lines)
+    
+    # Convert to lowercase and split into words
+    # Only keep alphanumeric words (removes punctuation, special characters)
+    words = re.findall(r'\b\w+\b', filtered_content.lower())
+    
+    # Create frequency table
+    word_freq = {}
+    for word in words:
+        if word.isalnum():  # Additional check to ensure word is alphanumeric
+            word_freq[word] = word_freq.get(word, 0) + 1
+    
+    return word_freq
+
+def save_word_frequency_csv(word_freq: Dict[str, int], filename: str, output_dir: Path):
+    """Saves word frequency table as CSV file."""
+    csv_path = output_dir / f"{filename}.csv"
+    
+    with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Word', 'Frequency'])  # Header
+        
+        # Sort by frequency in descending order
+        sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+        writer.writerows(sorted_words)
+
 def save_emails(emails: List[Dict]):
-    """Saves filtered emails to a directory."""
+    """Saves filtered emails to a directory and creates word frequency tables."""
     output_dir = Path('filtered_emails')
     output_dir.mkdir(exist_ok=True)
     
@@ -144,16 +189,21 @@ def save_emails(emails: List[Dict]):
         
         # Create a safe filename from the subject
         safe_subject = "".join(x for x in subject if x.isalnum() or x in (' ', '-', '_'))
-        filename = f"{safe_subject[:50]}_{email['id']}.txt"
+        filename = f"{safe_subject[:50]}_{email['id']}"
         
         # Get and decode email content
         content = get_email_content(email)
         
-        with open(output_dir / filename, 'w', encoding='utf-8') as f:
+        # Save email content as text file
+        with open(output_dir / f"{filename}.txt", 'w', encoding='utf-8') as f:
             f.write(f"Subject: {subject}\n")
             f.write(f"Date: {date}\n")
             f.write("\nMessage:\n")
             f.write(content)
+        
+        # Create and save word frequency table
+        word_freq = create_word_frequency_table(content)
+        save_word_frequency_csv(word_freq, filename, output_dir)
 
 def main():
     # Get configuration from environment variables
