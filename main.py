@@ -3,7 +3,7 @@ import pickle
 import base64
 import csv
 import re
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from datetime import datetime
 from pathlib import Path
 from google.auth.transport.requests import Request
@@ -11,6 +11,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
+from google.cloud import language_v1
+import google.auth
 
 # Load environment variables
 load_dotenv()
@@ -32,7 +34,7 @@ def get_gmail_service():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file('user_credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
         
         # Save credentials for future use
@@ -132,8 +134,54 @@ def get_email_content(email: Dict) -> str:
 
     return '\n'.join(content) if content else 'No readable content available'
 
-def create_word_frequency_table(content: str) -> Dict[str, int]:
-    """Creates a frequency table of unique words in the content."""
+def get_word_pos_tags(text: str) -> Dict[str, str]:
+    """Get part of speech tags for words using Google Cloud Natural Language API."""
+    try:
+        # Initialize the client with explicit credentials
+        # credentials, _ = google.auth.default()
+        credentials, project_id = google.auth.load_credentials_from_file(
+            "service_account_credentials.json"
+        )
+        client = language_v1.LanguageServiceClient(credentials=credentials)
+        
+        # Create document object
+        document = language_v1.Document(
+            content=text,
+            type_=language_v1.Document.Type.PLAIN_TEXT,
+            language='en'  # Explicitly specify English
+        )
+        
+        # Analyze syntax
+        try:
+            response = client.analyze_syntax(
+                request={'document': document}
+            )
+        except Exception as e:
+            print(f"Error during syntax analysis: {str(e)}")
+            return {}
+        
+        # Create a dictionary of word to POS tag
+        word_pos = {}
+        for token in response.tokens:
+            word = token.text.content.lower()
+            pos_tag = language_v1.PartOfSpeech.Tag(token.part_of_speech.tag).name
+            word_pos[word] = pos_tag
+            
+        if not word_pos:
+            print("Warning: No POS tags were generated for the text")
+        
+        return word_pos
+        
+    except Exception as e:
+        print(f"Error initializing Language Service Client: {str(e)}")
+        print("Make sure you have:")
+        print("1. Enabled the Cloud Natural Language API")
+        print("2. Set up authentication (GOOGLE_APPLICATION_CREDENTIALS)")
+        print("3. Have sufficient permissions in your credentials")
+        return {}
+
+def create_word_frequency_table(content: str) -> Dict[str, Tuple[int, str]]:
+    """Creates a frequency table of unique words in the content with their part of speech."""
     # Remove HTML tags if any exist
     content = re.sub(r'<[^>]+>', '', content)
     
@@ -151,29 +199,47 @@ def create_word_frequency_table(content: str) -> Dict[str, int]:
     # Rejoin the filtered content
     filtered_content = '\n'.join(content_lines)
     
+    # Get part of speech tags for all words
+    try:
+        word_pos_tags = get_word_pos_tags(filtered_content)
+    except Exception as e:
+        print(f"Warning: Could not get POS tags: {str(e)}")
+        word_pos_tags = {}
+    
     # Convert to lowercase and split into words
     # Only keep alphanumeric words (removes punctuation, special characters)
     words = re.findall(r'\b\w+\b', filtered_content.lower())
     
-    # Create frequency table
+    # Create frequency table with POS tags
     word_freq = {}
     for word in words:
+        # Skip single-character words
+        if len(word) <= 1:
+            continue
+            
         if word.isalnum():  # Additional check to ensure word is alphanumeric
-            word_freq[word] = word_freq.get(word, 0) + 1
+            if word not in word_freq:
+                pos_tag = word_pos_tags.get(word, 'UNKNOWN')
+                word_freq[word] = [1, pos_tag]
+            else:
+                word_freq[word][0] += 1
     
     return word_freq
 
-def save_word_frequency_csv(word_freq: Dict[str, int], filename: str, output_dir: Path):
+def save_word_frequency_csv(word_freq: Dict[str, Tuple[int, str]], filename: str, output_dir: Path):
     """Saves word frequency table as CSV file."""
     csv_path = output_dir / f"{filename}.csv"
     
     with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(['Word', 'Frequency'])  # Header
+        writer.writerow(['Word', 'Frequency', 'Part of Speech'])  # Updated header
         
         # Sort by frequency in descending order
-        sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-        writer.writerows(sorted_words)
+        sorted_words = sorted(word_freq.items(), key=lambda x: x[1][0], reverse=True)
+        
+        # Write each word with its frequency and POS tag
+        for word, (freq, pos) in sorted_words:
+            writer.writerow([word, freq, pos])
 
 def save_emails(emails: List[Dict]):
     """Saves filtered emails to a directory and creates word frequency tables."""
