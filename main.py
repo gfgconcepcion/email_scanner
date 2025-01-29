@@ -41,28 +41,31 @@ def get_gmail_service():
     
     return build('gmail', 'v1', credentials=creds)
 
-def get_emails_from_sender(service, sender_email: str) -> List[Dict]:
-    """Retrieves all emails from a specific sender."""
-    results = service.users().messages().list(
-        userId='me',
-        q=f'from:{sender_email}'
-    ).execute()
-
-    messages = results.get('messages', [])
-    emails = []
-
-    for message in messages:
-        email = service.users().messages().get(
-            userId='me',
-            id=message['id'],
-            format='full'
-        ).execute()
-        emails.append(email)
+def get_emails_from_senders(service, sender_emails: List[str]) -> List[Dict]:
+    """Retrieves all emails from specified senders."""
+    all_emails = []
     
-    return emails
+    for sender_email in sender_emails:
+        print(f"Fetching emails from {sender_email}...")
+        results = service.users().messages().list(
+            userId='me',
+            q=f'from:{sender_email}'
+        ).execute()
 
-def filter_emails_by_subject(emails: List[Dict], keyword: str) -> List[Dict]:
-    """Filters emails based on a keyword in the subject."""
+        messages = results.get('messages', [])
+        
+        for message in messages:
+            email = service.users().messages().get(
+                userId='me',
+                id=message['id'],
+                format='full'
+            ).execute()
+            all_emails.append(email)
+    
+    return all_emails
+
+def filter_emails_by_subjects(emails: List[Dict], keywords: List[str]) -> List[Dict]:
+    """Filters emails based on keywords in the subject."""
     filtered_emails = []
     
     for email in emails:
@@ -70,9 +73,10 @@ def filter_emails_by_subject(emails: List[Dict], keyword: str) -> List[Dict]:
         subject = next(
             (header['value'] for header in headers if header['name'].lower() == 'subject'),
             ''
-        )
+        ).lower()
         
-        if keyword.lower() in subject.lower():
+        # Check if any of the keywords match
+        if any(keyword.lower() in subject for keyword in keywords):
             filtered_emails.append(email)
     
     return filtered_emails
@@ -207,24 +211,29 @@ def save_emails(emails: List[Dict]):
 
 def main():
     # Get configuration from environment variables
-    sender_email = os.getenv('SENDER_EMAIL')
-    subject_keyword = os.getenv('SUBJECT_KEYWORD')
+    sender_emails_str = os.getenv('SENDER_EMAILS')
+    subject_keywords_str = os.getenv('SUBJECT_KEYWORDS')
     
-    if not sender_email or not subject_keyword:
-        print("Please set SENDER_EMAIL and SUBJECT_KEYWORD in your .env file")
+    if not sender_emails_str or not subject_keywords_str:
+        print("Please set SENDER_EMAILS and SUBJECT_KEYWORDS in your .env file")
+        print("Format: comma-separated values (e.g., SENDER_EMAILS=email1@domain.com,email2@domain.com)")
         return
+    
+    # Split the comma-separated strings into lists
+    sender_emails = [email.strip() for email in sender_emails_str.split(',')]
+    subject_keywords = [keyword.strip() for keyword in subject_keywords_str.split(',')]
     
     try:
         # Initialize Gmail API service
         service = get_gmail_service()
         
-        # Get emails from sender
-        print(f"Fetching emails from {sender_email}...")
-        emails = get_emails_from_sender(service, sender_email)
+        # Get emails from all specified senders
+        emails = get_emails_from_senders(service, sender_emails)
+        print(f"Found {len(emails)} total emails from specified senders")
         
-        # Filter emails by subject keyword
-        print(f"Filtering emails with keyword '{subject_keyword}' in subject...")
-        filtered_emails = filter_emails_by_subject(emails, subject_keyword)
+        # Filter emails by subject keywords
+        print(f"Filtering emails with keywords: {', '.join(subject_keywords)}")
+        filtered_emails = filter_emails_by_subjects(emails, subject_keywords)
         
         # Save filtered emails
         print("Saving filtered emails...")
